@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
 import { RARITY_CONFIG } from "@/lib/prizes";
+import PrizeBox3D from "./PrizeBox3D";
 
 export default function RewardPopup() {
   const showReward = useGameStore((s) => s.showReward);
@@ -17,7 +18,7 @@ export default function RewardPopup() {
     <AnimatePresence>
       {showReward && (
         <motion.div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="reward-overlay fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -29,10 +30,12 @@ export default function RewardPopup() {
             animate={{ scale: 1, opacity: 1, rotate: 0 }}
             exit={{ scale: 0.5, opacity: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 18 }}
-            className="relative w-full max-w-xs sm:max-w-sm rounded-3xl chrome-bezel border-2 p-6 text-center overflow-hidden"
+          className="reward-popup-card relative w-full max-w-xs sm:max-w-sm rounded-3xl chrome-bezel border-2 p-6 text-center overflow-hidden"
             style={{ borderColor: cfg.color, boxShadow: `0 0 40px ${cfg.glow}` }}
           >
             <div className="absolute inset-0 opacity-20 bulb-strip" />
+
+            <motion.div className="reward-burst" animate={{ rotate: 360 }} transition={{ duration: 18, repeat: Infinity, ease: "linear" }} aria-hidden="true" />
 
             {isJackpotWin && (
               <motion.p
@@ -44,17 +47,13 @@ export default function RewardPopup() {
               </motion.p>
             )}
 
-            <p className="relative text-xs uppercase tracking-widest text-white/50 font-bold mb-2">
-              You Won!
+            <p className="relative text-xs uppercase tracking-[.28em] text-white/60 font-bold mb-0">
+              Prize secured
             </p>
 
-            <motion.div
-              animate={{ y: [0, -8, 0], rotate: [0, -5, 5, 0] }}
-              transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
-              className="relative text-7xl mb-3 drop-shadow-[0_6px_12px_rgba(0,0,0,0.5)]"
-            >
-              {lastReward.template.emoji}
-            </motion.div>
+            <PrizeBox3D template={lastReward.template} size="large" className="reward-popup-box" />
+
+            <div className="reward-unlocked-banner">NEW TOY UNLOCKED!</div>
 
             <h2 className="relative font-display text-2xl font-extrabold text-white mb-1">
               {lastReward.template.name}

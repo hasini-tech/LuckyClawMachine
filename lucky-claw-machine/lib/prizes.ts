@@ -51,6 +51,7 @@ export const RARITY_CONFIG: Record<Rarity, RarityConfig> = {
 };
 
 export const PRIZE_TEMPLATES: PrizeTemplate[] = [
+  { id: "gowhats", name: "GoWhats", emoji: "G", rarity: "common", points: 12, imageUrl: "/images/gowhat.png" },
   { id: "billzzy", name: "Billzzy", emoji: "🅱", rarity: "common", points: 10, imageUrl: "/images/billzzy-logo.png" },
   { id: "ciphergate", name: "Ciphergate", emoji: "🅲", rarity: "rare", points: 30, imageUrl: "/images/ciphergate.jpeg" },
   { id: "f3", name: "F3", emoji: "🅵", rarity: "common", points: 15, imageUrl: "/images/f3-icon.png" },

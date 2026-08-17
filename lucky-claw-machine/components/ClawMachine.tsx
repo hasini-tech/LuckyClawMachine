@@ -1,21 +1,30 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { motion } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
 import { RARITY_CONFIG } from "@/lib/prizes";
-import { animateValue2D, computeGrabChance, distance, rollSuccess } from "@/lib/physics";
+import { animateValue2D, clamp, computeGrabChance, distance, rollSuccess } from "@/lib/physics";
 import { soundManager } from "@/lib/sounds";
 import Claw from "./Claw";
 import Prize from "./Prize";
 import Joystick from "./Joystick";
 import CoinSlot from "./CoinSlot";
 import Confetti from "./Confetti";
+import PrizeDrop from "./PrizeDrop";
 
 const CHUTE_POS = { x: 8, y: 78 };
 const REST_POS = { x: 51, y: 11 };
-const FIELD_MAX_DIST = 95;
+const GRAB_RADIUS_PX = 38;
+const AIM_RADIUS_PX = 76;
 const PRIZE_COUNT = 42;
+
+function responsivePrizeCount() {
+  if (typeof window === "undefined") return PRIZE_COUNT;
+  if (window.innerWidth <= 380) return 24;
+  if (window.innerWidth <= 760) return 30;
+  return PRIZE_COUNT;
+}
 
 const stars = [
   { left: "8%", top: "22%", size: 15, delay: 0 },
@@ -26,53 +35,203 @@ const stars = [
 ];
 
 export default function ClawMachine() {
-  const { coins, clawX, clawY, clawExtension, clawPhase, heldPrizeUid, prizes, insertCoin, moveClaw, setClawPos, setClawExtension, setClawPhase, setHeldPrize, markPrizeGrabbed, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss, initPrizes } = useGameStore();
+  const { coins, clawX, clawY, clawExtension, clawPhase, heldPrizeUid, prizes, gameOver, cameraMode, streak, jackpotProgress, insertCoin, moveClaw, setClawPos, setClawExtension, setClawPhase, setHeldPrize, releaseHeldPrize, recordAttempt, markPrizeGrabbed, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss, initPrizes, startRound, tickTimer, resetRound } = useGameStore();
   const [confettiActive, setConfettiActive] = useState(false);
   const [confettiBig, setConfettiBig] = useState(false);
   const [shake, setShake] = useState(false);
+  const [feedback, setFeedback] = useState<"success" | "miss" | null>(null);
+  const [selectedPrizeUid, setSelectedPrizeUid] = useState<string | null>(null);
+  const [releaseDrop, setReleaseDrop] = useState<{ uid: string; template: (typeof prizes)[number]["template"] } | null>(null);
+  const [fieldSize, setFieldSize] = useState({ width: 320, height: 520 });
+  const glassRef = useRef<HTMLDivElement>(null);
   const missStreakRef = useRef(0);
   const cancelAnimRef = useRef<null | (() => void)>(null);
   const pressedKeys = useRef<Set<string>>(new Set());
   const keyRafRef = useRef<number | null>(null);
+  const sequenceTimersRef = useRef<number[]>([]);
+  const sequenceIdRef = useRef(0);
   const initialized = useRef(false);
+
+  const scheduleSequenceStep = useCallback((callback: () => void, delay: number) => {
+    let timerId = 0;
+    timerId = window.setTimeout(() => {
+      sequenceTimersRef.current = sequenceTimersRef.current.filter((id) => id !== timerId);
+      callback();
+    }, delay);
+    sequenceTimersRef.current.push(timerId);
+  }, []);
+
+  const cancelClawSequence = useCallback((resetPosition = false) => {
+    sequenceIdRef.current += 1;
+    sequenceTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    sequenceTimersRef.current = [];
+    cancelAnimRef.current?.();
+    cancelAnimRef.current = null;
+    if (resetPosition) {
+      const heldUid = useGameStore.getState().heldPrizeUid;
+      if (heldUid) releaseHeldPrize(heldUid);
+      setClawPhase("ready");
+      setClawExtension(0);
+      setHeldPrize(null);
+      setReleaseDrop(null);
+      setClawPos(REST_POS.x, REST_POS.y);
+    }
+  }, [releaseHeldPrize, setClawExtension, setClawPhase, setClawPos, setHeldPrize]);
+
+  useEffect(() => {
+    startRound();
+    const timerId = window.setInterval(tickTimer, 1000);
+    return () => window.clearInterval(timerId);
+  }, [startRound, tickTimer]);
 
   useEffect(() => {
     if (!initialized.current) {
       initialized.current = true;
-      initPrizes(PRIZE_COUNT);
+      initPrizes(responsivePrizeCount());
     }
   }, [initPrizes]);
 
-  const isIdle = clawPhase === "idle";
+  useEffect(() => {
+    const glass = glassRef.current;
+    if (!glass) return;
+
+    const measureField = () => {
+      const rect = glass.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setFieldSize((current) => current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height });
+      }
+    };
+
+    measureField();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measureField);
+    observer?.observe(glass);
+    window.addEventListener("resize", measureField);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measureField);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (gameOver) cancelClawSequence(true);
+  }, [cancelClawSequence, gameOver]);
+
+  useEffect(() => () => {
+    sequenceIdRef.current += 1;
+    sequenceTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    cancelAnimRef.current?.();
+  }, []);
+
+  const isAiming = clawPhase === "aiming";
+  const carriageY = 10 + clawY * 0.12;
+  const dropTargetPx = Math.max(0, ((clawY - carriageY) / 100) * fieldSize.height - 64);
+
+  const nearestPrize = useMemo(() => {
+    if (!isAiming) return null;
+    let closest: (typeof prizes)[number] | null = null;
+    let closestDistance = Infinity;
+
+    for (const prize of prizes) {
+      if (prize.fallen || prize.grabbed) continue;
+      const currentDistance = distance(
+        (clawX / 100) * fieldSize.width,
+        (clawY / 100) * fieldSize.height,
+        (prize.x / 100) * fieldSize.width,
+        (prize.y / 100) * fieldSize.height,
+      );
+      if (currentDistance < closestDistance) {
+        closest = prize;
+        closestDistance = currentDistance;
+      }
+    }
+
+    return closest ? { prize: closest, distance: closestDistance } : null;
+  }, [clawX, clawY, fieldSize, isAiming, prizes]);
+
+  const targetPrize = nearestPrize && nearestPrize.distance <= GRAB_RADIUS_PX ? nearestPrize.prize : null;
+  const checkDistance = nearestPrize ? Math.round(nearestPrize.distance) : null;
+  const alignmentPercent = nearestPrize
+    ? Math.round(clamp(1 - nearestPrize.distance / AIM_RADIUS_PX, 0, 1) * 100)
+    : 0;
+  const alignmentLabel = targetPrize
+    ? alignmentPercent >= 84 ? "PERFECT AIM" : "READY TO GRAB"
+    : nearestPrize ? `${alignmentPercent}% ALIGN` : "MOVE CLAW";
+  const guideDx = nearestPrize ? ((nearestPrize.prize.x - clawX) / 100) * fieldSize.width : 0;
+  const guideDy = nearestPrize ? ((nearestPrize.prize.y - carriageY) / 100) * fieldSize.height : 0;
+  const aimGuide = nearestPrize && isAiming
+    ? {
+      left: `${clawX}%`,
+      top: `${carriageY}%`,
+      width: `${Math.max(2, (Math.hypot(guideDx, guideDy) / fieldSize.width) * 100)}%`,
+      transform: `translateY(-50%) rotate(${Math.atan2(guideDy, guideDx) * (180 / Math.PI)}deg)`,
+    }
+    : null;
+
+  const pulseMachine = useCallback((duration = 260) => {
+    setShake(true);
+    window.setTimeout(() => setShake(false), duration);
+  }, []);
+
+  const haptic = useCallback((pattern: number | number[]) => {
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(pattern);
+  }, []);
+
+  const handlePrizeSelect = useCallback((prize: (typeof prizes)[number]) => {
+    soundManager.unlock();
+    soundManager.buttonPress();
+    setSelectedPrizeUid(prize.uid);
+
+    // On touch devices, tapping a visible box is a quick aiming assist. The
+    // claw still uses its real position and the normal pixel collision check
+    // when GRAB is pressed; this only removes difficult tiny-screen dragging.
+    if (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches) {
+      setClawPos(prize.x, prize.y);
+      haptic(8);
+    }
+  }, [haptic, setClawPos]);
 
   const triggerGrab = useCallback(() => {
     const state = useGameStore.getState();
-    if (state.clawPhase !== "idle") return;
+    if (state.clawPhase !== "aiming" || state.gameOver || !state.gameStarted) return;
     if (state.coins < 1) {
       soundManager.outOfCoins();
-      setShake(true);
-      setTimeout(() => setShake(false), 400);
+      pulseMachine(400);
+      haptic(35);
       return;
     }
 
     soundManager.unlock();
     insertCoin(-1);
+    recordAttempt();
     soundManager.buttonPress();
+    pulseMachine(220);
+    haptic(18);
+    setFeedback(null);
     const startX = state.clawX;
     const startY = state.clawY;
+    const sequenceId = sequenceIdRef.current + 1;
+    sequenceIdRef.current = sequenceId;
     setClawPhase("dropping");
     soundManager.clawDrop();
     setClawExtension(1);
 
-    setTimeout(() => {
+    scheduleSequenceStep(() => {
+      if (sequenceIdRef.current !== sequenceId) return;
       setClawPhase("grabbing");
       soundManager.clawClose();
       const current = useGameStore.getState();
       let target: (typeof current.prizes)[number] | null = null;
       let bestDist = Infinity;
       for (const p of current.prizes) {
-        if (p.fallen) continue;
-        const d = distance(startX, startY, p.x, p.y);
+        if (p.fallen || p.grabbed) continue;
+        const d = distance(
+          (startX / 100) * fieldSize.width,
+          (startY / 100) * fieldSize.height,
+          (p.x / 100) * fieldSize.width,
+          (p.y / 100) * fieldSize.height,
+        );
         if (d < bestDist) {
           bestDist = d;
           target = p;
@@ -80,12 +239,13 @@ export default function ClawMachine() {
       }
 
       let success = false;
-      if (target && bestDist <= FIELD_MAX_DIST) {
+      if (target && bestDist <= GRAB_RADIUS_PX) {
         const cfg = RARITY_CONFIG[target.template.rarity];
-        success = rollSuccess(computeGrabChance({ baseWeight: cfg.grabWeight, distancePx: bestDist, maxDistance: FIELD_MAX_DIST, missStreak: missStreakRef.current }));
+        success = rollSuccess(computeGrabChance({ baseWeight: cfg.grabWeight, distancePx: bestDist, maxDistance: GRAB_RADIUS_PX, missStreak: missStreakRef.current }));
       }
 
-      setTimeout(() => {
+      scheduleSequenceStep(() => {
+        if (sequenceIdRef.current !== sequenceId) return;
         if (success && target) {
           markPrizeGrabbed(target.uid, true);
           setHeldPrize(target.uid);
@@ -97,51 +257,98 @@ export default function ClawMachine() {
         soundManager.clawRise();
         setClawExtension(0);
 
-        setTimeout(() => {
-          setClawPhase("returning");
+        scheduleSequenceStep(() => {
+          if (sequenceIdRef.current !== sequenceId) return;
+          setClawPhase("moving_to_drop");
           cancelAnimRef.current?.();
           cancelAnimRef.current = animateValue2D({ x: startX, y: startY }, CHUTE_POS, 650, (v) => setClawPos(v.x, v.y), () => {
+            if (sequenceIdRef.current !== sequenceId) return;
             setClawPhase("releasing");
             soundManager.clawOpen();
-            setTimeout(() => {
+            scheduleSequenceStep(() => {
+              if (sequenceIdRef.current !== sequenceId) return;
               if (success && target) {
+                if (useGameStore.getState().gameOver) return;
                 markPrizeFallen(target.uid);
                 setHeldPrize(null);
-                awardPrize(target.template);
-                const jackpot = useGameStore.getState().isJackpotWin;
-                soundManager[jackpot ? "jackpot" : "win"]();
-                setConfettiBig(jackpot);
-                setConfettiActive(true);
-                setTimeout(() => setConfettiActive(false), jackpot ? 3200 : 1800);
-                setTimeout(() => {
+                setSelectedPrizeUid(null);
+                setReleaseDrop({ uid: target.uid, template: target.template });
+                scheduleSequenceStep(() => {
+                  if (sequenceIdRef.current !== sequenceId || useGameStore.getState().gameOver) return;
+                  setClawPhase("success");
+                  awardPrize(target.template);
+                  const jackpot = useGameStore.getState().isJackpotWin;
+                  soundManager[jackpot ? "jackpot" : "win"]();
+                  setFeedback("success");
+                  pulseMachine(480);
+                  haptic([20, 35, 20]);
+                  setConfettiBig(jackpot);
+                  setConfettiActive(true);
+                  scheduleSequenceStep(() => {
+                    if (sequenceIdRef.current === sequenceId) setConfettiActive(false);
+                  }, jackpot ? 3200 : 1800);
+                }, 520);
+                scheduleSequenceStep(() => {
+                  if (sequenceIdRef.current !== sequenceId) return;
+                  setReleaseDrop(null);
                   removePrize(target.uid);
                   respawnPrize();
-                }, 500);
+                }, 820);
               } else {
                 soundManager.lose();
+                setFeedback("miss");
+                haptic(45);
+                setClawPhase("failure");
                 registerMiss();
               }
 
-              setClawPhase("settling");
-              setTimeout(() => {
+              scheduleSequenceStep(() => setFeedback(null), success ? 2300 : 1600);
+
+              scheduleSequenceStep(() => {
+                if (sequenceIdRef.current !== sequenceId) return;
+                setClawPhase("settling");
                 cancelAnimRef.current?.();
-                cancelAnimRef.current = animateValue2D({ x: CHUTE_POS.x, y: CHUTE_POS.y }, REST_POS, 500, (v) => setClawPos(v.x, v.y), () => setClawPhase("idle"));
-              }, 350);
+                cancelAnimRef.current = animateValue2D({ x: CHUTE_POS.x, y: CHUTE_POS.y }, REST_POS, 500, (v) => setClawPos(v.x, v.y), () => setClawPhase("aiming"));
+              }, success ? 1050 : 500);
             }, 350);
           });
         }, 550);
       }, 450);
     }, 650);
-  }, [insertCoin, setClawPhase, setClawExtension, setClawPos, markPrizeGrabbed, setHeldPrize, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss]);
+  }, [fieldSize, haptic, insertCoin, pulseMachine, recordAttempt, scheduleSequenceStep, setClawPhase, setClawExtension, setClawPos, markPrizeGrabbed, setHeldPrize, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss]);
+
+  const handleRestart = useCallback(() => {
+    cancelClawSequence(true);
+    resetRound();
+    initPrizes(responsivePrizeCount());
+    missStreakRef.current = 0;
+    setConfettiActive(false);
+    setConfettiBig(false);
+    setFeedback(null);
+    setSelectedPrizeUid(null);
+    setReleaseDrop(null);
+  }, [cancelClawSequence, initPrizes, resetRound]);
 
   const simulateKey = (key: string, isDown: boolean) => {
     if (isDown) pressedKeys.current.add(key);
     else pressedKeys.current.delete(key);
   };
 
+  const pressDirection = (event: ReactPointerEvent<HTMLButtonElement>, key: string) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    simulateKey(key, true);
+  };
+
+  const releaseDirection = (event: ReactPointerEvent<HTMLButtonElement>, key: string) => {
+    event.preventDefault();
+    simulateKey(key, false);
+  };
+
   const keyLoop = useCallback(() => {
     const keys = pressedKeys.current;
-    if (keys.size > 0 && useGameStore.getState().clawPhase === "idle") {
+    if (keys.size > 0 && useGameStore.getState().clawPhase === "aiming") {
       let dx = 0;
       let dy = 0;
       if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) dx -= 1.25;
@@ -154,9 +361,20 @@ export default function ClawMachine() {
   }, [moveClaw]);
 
   useEffect(() => {
+    if (!isAiming || gameOver) pressedKeys.current.clear();
+  }, [gameOver, isAiming]);
+
+  useEffect(() => {
     keyRafRef.current = requestAnimationFrame(keyLoop);
     const onDown = (e: KeyboardEvent) => {
-      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) e.preventDefault();
+      const directionalKey = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key);
+      const isJoystickTarget = e.target instanceof HTMLElement && Boolean(e.target.closest("[data-joystick='true']"));
+      if (directionalKey) {
+        e.preventDefault();
+        // Joystick.tsx handles one accessible step for focused arrow keys.
+        // Do not also add the key to the machine-wide held-key loop.
+        if (isJoystickTarget) return;
+      }
       pressedKeys.current.add(e.key);
       if (e.key === " " || e.key === "Enter") {
         e.preventDefault();
@@ -164,11 +382,14 @@ export default function ClawMachine() {
       }
     };
     const onUp = (e: KeyboardEvent) => pressedKeys.current.delete(e.key);
+    const onBlur = () => pressedKeys.current.clear();
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", onBlur);
       if (keyRafRef.current) cancelAnimationFrame(keyRafRef.current);
       cancelAnimRef.current?.();
     };
@@ -177,9 +398,15 @@ export default function ClawMachine() {
   const heldPrize = prizes.find((p) => p.uid === heldPrizeUid) ?? null;
 
   return (
-    <div className="arcade-scene">
+    <div className="arcade-scene" data-phase={clawPhase} data-camera={cameraMode}>
       <div className="arcade-backdrop" aria-hidden="true">
-        <div className="backdrop-left-panel" />
+        <div className="backdrop-left-panel">
+          <div className="logo-container">
+            <div className="logo-box logo-lite"><img src="/images/lite-logo.png" alt="Lite Logo" /></div>
+            <div className="logo-box logo-gowhat"><img src="/images/gowhat.png" alt="GoWhat Logo" /></div>
+          </div>
+        </div>
+        <div className="backdrop-floor-grid" />
         <div className="backdrop-floor" />
         <div className="backdrop-right-wall" />
         <div className="backdrop-right-shelf">
@@ -188,41 +415,83 @@ export default function ClawMachine() {
           <div className="shelf-card shelf-card-three"><span>●</span><b>NEW</b></div>
         </div>
         {stars.map((star, index) => <span key={index} className="scene-star" style={{ left: star.left, top: star.top, fontSize: star.size, animationDelay: `${star.delay}s` }}>✦</span>)}
+        <div className="scene-vignette" />
       </div>
 
       <motion.div className="claw-machine-shell" animate={shake ? { x: [0, -7, 7, -5, 5, 0] } : { x: 0 }} transition={{ duration: 0.4 }}>
-        <div className="machine-glass">
+        <div className="machine-side-depth machine-side-depth-left" aria-hidden="true" />
+        <div className="machine-side-depth machine-side-depth-right" aria-hidden="true" />
+        <div className="machine-crown" aria-hidden="true"><span>LUCKY</span><b>CLAW</b></div>
+        <div className="machine-glass" ref={glassRef}>
           <div className="prism-wall" aria-hidden="true">
             <i className="prism prism-a" /><i className="prism prism-b" /><i className="prism prism-c" /><i className="prism prism-d" /><i className="prism prism-e" /><i className="prism prism-f" /><i className="prism prism-g" /><i className="prism prism-h" /><i className="prism prism-i" /><i className="prism prism-j" />
           </div>
           <div className="machine-back-glow" />
+          <div className="machine-light-beam machine-light-beam-one" aria-hidden="true" />
+          <div className="machine-light-beam machine-light-beam-two" aria-hidden="true" />
           <div className="glass-star glass-star-one">✦</div><div className="glass-star glass-star-two">✦</div><div className="glass-star glass-star-three">✧</div>
           <div className="prize-tray"><div className="tray-back" /><div className="tray-shadow" /></div>
-          {prizes.map((prize) => <Prize key={prize.uid} prize={prize} isHeld={prize.uid === heldPrizeUid} isDropping={false} />)}
-          <Claw x={clawX} y={clawY} extension={clawExtension} phase={clawPhase} heldEmoji={heldPrize?.template.emoji ?? null} heldColor={heldPrize ? RARITY_CONFIG[heldPrize.template.rarity].color : null} />
+          <div className="prize-chute" aria-label="Prize collection chute"><span>DROP</span></div>
+          {aimGuide && <div className={`aim-guide ${targetPrize ? "is-locked" : ""}`} style={aimGuide} aria-hidden="true"><span /></div>}
+          {isAiming && <div className={`claw-check-reticle ${targetPrize ? "is-locked" : ""}`} style={{ left: `${clawX}%`, top: `${clawY}%` }} aria-hidden="true"><i /><b>{targetPrize ? "LOCK" : "CHECK"}</b></div>}
+          {prizes.map((prize) => <Prize key={prize.uid} prize={prize} isHeld={prize.uid === heldPrizeUid} isDropping={false} isTarget={prize.uid === nearestPrize?.prize.uid} isTargetLocked={prize.uid === targetPrize?.uid} isSelected={prize.uid === selectedPrizeUid} onSelect={isAiming ? () => handlePrizeSelect(prize) : undefined} />)}
+          {releaseDrop && <PrizeDrop key={releaseDrop.uid} template={releaseDrop.template} />}
+          <Claw x={clawX} y={carriageY} extension={clawExtension} phase={clawPhase} dropDistance={dropTargetPx} heldEmoji={heldPrize?.template.emoji ?? null} heldColor={heldPrize ? RARITY_CONFIG[heldPrize.template.rarity].color : null} heldImage={heldPrize?.template.imageUrl ?? null} />
           <div className="glass-shine" aria-hidden="true" /><div className="glass-edge-bottom" aria-hidden="true" />
         </div>
 
         <div className="machine-beam machine-beam-left" aria-hidden="true" /><div className="machine-beam machine-beam-right" aria-hidden="true" />
-        <div className="machine-top-rail" aria-hidden="true"><div className="rail-lamp" /><div className="rail-lamp rail-lamp-two" /><div className="rail-track" /></div>
+        <div className="machine-top-rail" aria-hidden="true">
+          <div className="rail-bracket rail-bracket-left" />
+          <div className="rail-bracket rail-bracket-right" />
+          <div className="rail-track" />
+        </div>
 
         <div className="machine-deck">
           <div className="deck-screw screw-tl" /><div className="deck-screw screw-tr" />
           <div className="deck-screw screw-bl" /><div className="deck-screw screw-br" />
           <div className="deck-shadow" />
-          <div className="deck-arrow deck-arrow-left" onPointerDown={() => simulateKey("ArrowLeft", true)} onPointerUp={() => simulateKey("ArrowLeft", false)} onPointerLeave={() => simulateKey("ArrowLeft", false)}>◀</div>
-          <div className="deck-arrow deck-arrow-up" onPointerDown={() => simulateKey("ArrowUp", true)} onPointerUp={() => simulateKey("ArrowUp", false)} onPointerLeave={() => simulateKey("ArrowUp", false)}>▲</div>
-          <div className="deck-arrow deck-arrow-down" onPointerDown={() => simulateKey("ArrowDown", true)} onPointerUp={() => simulateKey("ArrowDown", false)} onPointerLeave={() => simulateKey("ArrowDown", false)}>▼</div>
-          <div className="deck-arrow deck-arrow-right" onPointerDown={() => simulateKey("ArrowRight", true)} onPointerUp={() => simulateKey("ArrowRight", false)} onPointerLeave={() => simulateKey("ArrowRight", false)}>▶</div>
-          <CoinSlot onInsert={() => insertCoin(1)} disabled={false} />
-          <Joystick onMove={moveClaw} disabled={!isIdle} />
-          <motion.button onClick={triggerGrab} disabled={!isIdle || coins < 1} whileTap={{ scale: 0.93 }} className={`grab-button ${!isIdle || coins < 1 ? "is-disabled" : ""}`} aria-label="Press to grab"><span /></motion.button>
+          <button type="button" className="deck-arrow deck-arrow-left" aria-label="Move claw left" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowLeft")} onPointerUp={(event) => releaseDirection(event, "ArrowLeft")} onPointerCancel={(event) => releaseDirection(event, "ArrowLeft")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowLeft")}>◀</button>
+          <button type="button" className="deck-arrow deck-arrow-up" aria-label="Move claw up" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowUp")} onPointerUp={(event) => releaseDirection(event, "ArrowUp")} onPointerCancel={(event) => releaseDirection(event, "ArrowUp")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowUp")}>▲</button>
+          <button type="button" className="deck-arrow deck-arrow-down" aria-label="Move claw down" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowDown")} onPointerUp={(event) => releaseDirection(event, "ArrowDown")} onPointerCancel={(event) => releaseDirection(event, "ArrowDown")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowDown")}>▼</button>
+          <button type="button" className="deck-arrow deck-arrow-right" aria-label="Move claw right" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowRight")} onPointerUp={(event) => releaseDirection(event, "ArrowRight")} onPointerCancel={(event) => releaseDirection(event, "ArrowRight")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowRight")}>▶</button>
+          <CoinSlot onInsert={() => insertCoin(1)} disabled={gameOver} />
+          <Joystick onMove={moveClaw} disabled={!isAiming || gameOver} targetLocked={Boolean(targetPrize)} targetAvailable={Boolean(nearestPrize)} />
+          <div className={`aim-readout ${targetPrize ? "is-locked" : ""}`} aria-live="polite">
+            <span>{targetPrize ? "● LOCKED" : nearestPrize ? "◌ AIMING" : "◇ SCAN"}</span>
+            <b>{targetPrize?.template.name ?? nearestPrize?.prize.template.name ?? "MOVE CLAW"}</b>
+            <small>{targetPrize ? "BOX IN RANGE · PRESS GRAB" : nearestPrize ? `${alignmentLabel} · ${checkDistance}px` : "STEER TO A TOY"}</small>
+          </div>
+          <div className={`alignment-meter ${targetPrize ? "is-locked" : ""}`} aria-label={`Claw alignment ${alignmentPercent}%`}>
+            <div><span>ALIGNMENT</span><strong>{alignmentPercent}%</strong></div>
+            <i><b style={{ width: `${alignmentPercent}%` }} /></i>
+          </div>
+          <div className="deck-jackpot" aria-live="polite">
+            <div><span>LUCK METER</span><b>{jackpotProgress}%</b></div>
+            <i><b style={{ width: `${jackpotProgress}%` }} /></i>
+            <small>{streak > 0 ? `STREAK ×${streak}` : "WIN TO CHARGE"}</small>
+          </div>
+          <motion.button onClick={triggerGrab} disabled={!isAiming || gameOver || coins < 1} whileTap={{ scale: 0.93, y: 4 }} className={`grab-button ${!isAiming || gameOver || coins < 1 ? "is-disabled" : ""}`} aria-label="Press to grab"><span /><b>GRAB</b></motion.button>
+          <div className="deck-control-label deck-control-label-left">AIM</div>
+          <div className="deck-control-label deck-control-label-right">GRAB</div>
           <div className="deck-coin-count">{String(coins).padStart(2, "0")}</div>
+          <div className="machine-feedback" aria-live="polite">
+            {feedback && <motion.span key={feedback} initial={{ opacity: 0, y: 8, scale: .7 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -8 }} className={feedback === "success" ? "is-success" : "is-miss"}>{feedback === "success" ? "TOY SECURED" : "TRY AGAIN"}</motion.span>}
+          </div>
         </div>
       </motion.div>
 
       <div className="machine-ground-shadow" aria-hidden="true" />
       <Confetti active={confettiActive} big={confettiBig} />
+      {gameOver && <motion.div className="game-over-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <motion.div className="game-over-card" initial={{ scale: .8, y: 18 }} animate={{ scale: 1, y: 0 }}>
+          <span className="game-over-kicker">ROUND COMPLETE</span>
+          <strong className="game-over-time">00:00</strong>
+          <h2>TIME UP!</h2>
+          <p>Insert your luck again and beat your score.</p>
+          <button onClick={handleRestart}>PLAY AGAIN · 60 SEC</button>
+        </motion.div>
+      </motion.div>}
     </div>
   );
 }

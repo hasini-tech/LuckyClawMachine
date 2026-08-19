@@ -21,11 +21,17 @@ export default function Prize({ prize, isHeld, isTarget = false, isTargetLocked 
   const size = 28 + (seed % 18) + Math.round(depth * 7);
   const depthScale = .82 + depth * .22;
   const tilt = -12 + (seed % 25);
+  // Let the nearest box grow gently as a visual aiming cue. This is only a
+  // presentation effect; the actual grab radius remains unchanged in physics.
+  const targetScale = isTargetLocked ? depthScale * 1.14 : depthScale * 1.08;
+  const animatedScale = isTarget
+    ? [depthScale, targetScale, depthScale]
+    : [depthScale, depthScale * 1.02, depthScale];
   if (prize.fallen) return null;
 
   return (
     <AnimatePresence>
-      {!isHeld && <motion.div key={prize.uid} className={`toy-prize ${isTarget ? "is-target" : ""} ${isTargetLocked ? "is-target-locked" : ""} ${isSelected ? "is-selected" : ""}`} role={onSelect ? "button" : undefined} tabIndex={onSelect ? 0 : undefined} aria-label={onSelect ? `Select ${prize.template.name}` : undefined} onClick={onSelect} onKeyDown={(event) => { if (onSelect && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onSelect(); } }} style={{ left: `${prize.x}%`, top: `${prize.y}%`, zIndex: 10 + Math.round(depth * 28), ["--toy-size" as string]: `${size}px`, ["--toy-depth" as string]: depth, ["--toy-scale" as string]: depthScale, ["--toy-tilt" as string]: `${tilt}deg`, ["--toy-color" as string]: color }} initial={{ opacity: 0, scale: depthScale * .35 }} animate={{ opacity: 1, scale: [depthScale, depthScale * 1.02, depthScale], y: [0, -2 - depth * 2, 0], rotate: [tilt, tilt + 2, tilt] }} exit={{ opacity: 0, scale: depthScale * .2 }} transition={{ opacity: { duration: 0.25 }, scale: { duration: 3 + (seed % 2), repeat: Infinity, ease: "easeInOut", delay: prize.bob }, y: { duration: 3 + (seed % 2), repeat: Infinity, ease: "easeInOut", delay: prize.bob }, rotate: { duration: 4 + (seed % 2), repeat: Infinity, ease: "easeInOut", delay: prize.bob } }}>
+      {!isHeld && <motion.div key={prize.uid} className={`toy-prize ${isTarget ? "is-target" : ""} ${isTargetLocked ? "is-target-locked" : ""} ${isSelected ? "is-selected" : ""}`} role={onSelect ? "button" : undefined} tabIndex={onSelect ? 0 : undefined} aria-label={onSelect ? `Select ${prize.template.name}` : undefined} onClick={onSelect} onKeyDown={(event) => { if (onSelect && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onSelect(); } }} style={{ left: `${prize.x}%`, top: `${prize.y}%`, zIndex: 10 + Math.round(depth * 28), ["--toy-size" as string]: `${size}px`, ["--toy-depth" as string]: depth, ["--toy-scale" as string]: depthScale, ["--toy-tilt" as string]: `${tilt}deg`, ["--toy-color" as string]: color }} initial={{ opacity: 0, scale: depthScale * .35 }} animate={{ opacity: 1, scale: animatedScale, y: [0, -2 - depth * 2, 0], rotate: [tilt, tilt + 2, tilt] }} exit={{ opacity: 0, scale: depthScale * .2 }} transition={{ opacity: { duration: 0.25 }, scale: { duration: isTarget ? 1.4 : 3 + (seed % 2), repeat: Infinity, ease: "easeInOut", delay: prize.bob }, y: { duration: 3 + (seed % 2), repeat: Infinity, ease: "easeInOut", delay: prize.bob }, rotate: { duration: 4 + (seed % 2), repeat: Infinity, ease: "easeInOut", delay: prize.bob } }}>
         <span className="toy-glow" style={{ background: cfg.glow }} />
         {isTarget && <span className="toy-target-marker" aria-hidden="true"><i /><i /><i /><i /></span>}
         {prize.template.imageUrl ? (

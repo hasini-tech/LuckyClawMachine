@@ -8,9 +8,7 @@ import { soundManager } from "@/lib/sounds";
 
 export default function HUD() {
   const coins = useGameStore((s) => s.coins);
-  const timeLeft = useGameStore((s) => s.timeLeft);
   const clawPhase = useGameStore((s) => s.clawPhase);
-  const gameOver = useGameStore((s) => s.gameOver);
   const score = useGameStore((s) => s.score);
   const streak = useGameStore((s) => s.streak);
   const attempts = useGameStore((s) => s.attempts);
@@ -30,8 +28,7 @@ export default function HUD() {
       <button className={`hud-action ${cameraMode === "cinematic" ? "is-active" : ""}`} onClick={toggleCamera} aria-label="Toggle camera view"><strong>[R]</strong><span className="camera-glyph">◉</span></button>
       <button className="hud-action" onClick={() => { soundManager.toggleSfx(); toggleSfx(); }} aria-label="Toggle sound"><strong>[M]</strong><span>{sfxOn ? "◖" : "◌"}</span></button>
       <button className="hud-alert" onClick={() => { toggleMusic(); const on = useGameStore.getState().musicOn; if (on) soundManager.startMusic(); else soundManager.stopMusic(); }} aria-label="Toggle music"><span>!</span></button>
-      <div className={`hud-timer ${timeLeft <= 10 ? "is-warning" : ""}`} aria-label={`${timeLeft} seconds remaining`}><span>⏱</span>{String(timeLeft).padStart(2, "0")}s</div>
-      <div className={`hud-phase ${gameOver ? "is-over" : ""}`} aria-live="polite">{gameOver ? "TIME UP" : clawPhase === "aiming" ? "AIM" : clawPhase === "moving_to_drop" ? "RETURNING" : clawPhase.replace("_", " ").toUpperCase()}</div>
+      <div className="hud-phase" aria-live="polite">{clawPhase === "aiming" ? "AIM" : clawPhase === "moving_to_drop" ? "RETURNING" : clawPhase.replace("_", " ").toUpperCase()}</div>
       <div className="hud-score"><span>SCORE · TRIES {attempts}{streak > 1 ? ` · STREAK ×${streak}` : ""}</span>{score.toLocaleString()}</div>
       <div className="hud-coins"><span>●</span>{coins}</div>
       <AnimatePresence>

@@ -17,12 +17,13 @@ const CHUTE_POS = { x: 8, y: 78 };
 const REST_POS = { x: 51, y: 11 };
 const GRAB_RADIUS_PX = 38;
 const AIM_RADIUS_PX = 76;
-const PRIZE_COUNT = 42;
+const PRIZE_COUNT = 85;
+const KEYBOARD_SPEED = 2.1;
 
 function responsivePrizeCount() {
   if (typeof window === "undefined") return PRIZE_COUNT;
-  if (window.innerWidth <= 380) return 24;
-  if (window.innerWidth <= 760) return 30;
+  if (window.innerWidth <= 380) return 45;
+  if (window.innerWidth <= 760) return 60;
   return PRIZE_COUNT;
 }
 
@@ -35,7 +36,7 @@ const stars = [
 ];
 
 export default function ClawMachine() {
-  const { coins, clawX, clawY, clawExtension, clawPhase, heldPrizeUid, prizes, gameOver, cameraMode, streak, jackpotProgress, insertCoin, moveClaw, setClawPos, setClawExtension, setClawPhase, setHeldPrize, releaseHeldPrize, recordAttempt, markPrizeGrabbed, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss, initPrizes, startRound, tickTimer, resetRound } = useGameStore();
+  const { coins, clawX, clawY, clawExtension, clawPhase, heldPrizeUid, prizes, cameraMode, streak, jackpotProgress, insertCoin, moveClaw, setClawPos, setClawExtension, setClawPhase, setHeldPrize, releaseHeldPrize, recordAttempt, markPrizeGrabbed, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss, initPrizes } = useGameStore();
   const [confettiActive, setConfettiActive] = useState(false);
   const [confettiBig, setConfettiBig] = useState(false);
   const [shake, setShake] = useState(false);
@@ -48,16 +49,20 @@ export default function ClawMachine() {
   const cancelAnimRef = useRef<null | (() => void)>(null);
   const pressedKeys = useRef<Set<string>>(new Set());
   const keyRafRef = useRef<number | null>(null);
+  const keyLoopLastTimeRef = useRef<number | null>(null);
   const sequenceTimersRef = useRef<number[]>([]);
   const sequenceIdRef = useRef(0);
   const initialized = useRef(false);
 
   const scheduleSequenceStep = useCallback((callback: () => void, delay: number) => {
+    // Every delayed claw action is registered so a new grab, restart, or
+    // timeout can cancel the whole sequence without stale callbacks firing.
+    const safeDelay = Math.max(0, delay);
     let timerId = 0;
     timerId = window.setTimeout(() => {
       sequenceTimersRef.current = sequenceTimersRef.current.filter((id) => id !== timerId);
       callback();
-    }, delay);
+    }, safeDelay);
     sequenceTimersRef.current.push(timerId);
   }, []);
 
@@ -77,12 +82,6 @@ export default function ClawMachine() {
       setClawPos(REST_POS.x, REST_POS.y);
     }
   }, [releaseHeldPrize, setClawExtension, setClawPhase, setClawPos, setHeldPrize]);
-
-  useEffect(() => {
-    startRound();
-    const timerId = window.setInterval(tickTimer, 1000);
-    return () => window.clearInterval(timerId);
-  }, [startRound, tickTimer]);
 
   useEffect(() => {
     if (!initialized.current) {
@@ -113,10 +112,6 @@ export default function ClawMachine() {
       window.removeEventListener("resize", measureField);
     };
   }, []);
-
-  useEffect(() => {
-    if (gameOver) cancelClawSequence(true);
-  }, [cancelClawSequence, gameOver]);
 
   useEffect(() => () => {
     sequenceIdRef.current += 1;
@@ -194,7 +189,7 @@ export default function ClawMachine() {
 
   const triggerGrab = useCallback(() => {
     const state = useGameStore.getState();
-    if (state.clawPhase !== "aiming" || state.gameOver || !state.gameStarted) return;
+    if (state.clawPhase !== "aiming") return;
     if (state.coins < 1) {
       soundManager.outOfCoins();
       pulseMachine(400);
@@ -268,13 +263,12 @@ export default function ClawMachine() {
             scheduleSequenceStep(() => {
               if (sequenceIdRef.current !== sequenceId) return;
               if (success && target) {
-                if (useGameStore.getState().gameOver) return;
                 markPrizeFallen(target.uid);
                 setHeldPrize(null);
                 setSelectedPrizeUid(null);
                 setReleaseDrop({ uid: target.uid, template: target.template });
                 scheduleSequenceStep(() => {
-                  if (sequenceIdRef.current !== sequenceId || useGameStore.getState().gameOver) return;
+                  if (sequenceIdRef.current !== sequenceId) return;
                   setClawPhase("success");
                   awardPrize(target.template);
                   const jackpot = useGameStore.getState().isJackpotWin;
@@ -317,18 +311,6 @@ export default function ClawMachine() {
     }, 650);
   }, [fieldSize, haptic, insertCoin, pulseMachine, recordAttempt, scheduleSequenceStep, setClawPhase, setClawExtension, setClawPos, markPrizeGrabbed, setHeldPrize, markPrizeFallen, removePrize, respawnPrize, awardPrize, registerMiss]);
 
-  const handleRestart = useCallback(() => {
-    cancelClawSequence(true);
-    resetRound();
-    initPrizes(responsivePrizeCount());
-    missStreakRef.current = 0;
-    setConfettiActive(false);
-    setConfettiBig(false);
-    setFeedback(null);
-    setSelectedPrizeUid(null);
-    setReleaseDrop(null);
-  }, [cancelClawSequence, initPrizes, resetRound]);
-
   const simulateKey = (key: string, isDown: boolean) => {
     if (isDown) pressedKeys.current.add(key);
     else pressedKeys.current.delete(key);
@@ -346,25 +328,31 @@ export default function ClawMachine() {
     simulateKey(key, false);
   };
 
-  const keyLoop = useCallback(() => {
+  const keyLoop = useCallback((now: number) => {
+    const lastTime = keyLoopLastTimeRef.current ?? now - 16.67;
+    const frameScale = Math.min(32, now - lastTime) / 16.67;
+    keyLoopLastTimeRef.current = now;
     const keys = pressedKeys.current;
     if (keys.size > 0 && useGameStore.getState().clawPhase === "aiming") {
       let dx = 0;
       let dy = 0;
-      if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) dx -= 1.25;
-      if (keys.has("ArrowRight") || keys.has("d") || keys.has("D")) dx += 1.25;
-      if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) dy -= 1.25;
-      if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) dy += 1.25;
+      if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) dx -= KEYBOARD_SPEED;
+      if (keys.has("ArrowRight") || keys.has("d") || keys.has("D")) dx += KEYBOARD_SPEED;
+      if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) dy -= KEYBOARD_SPEED;
+      if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) dy += KEYBOARD_SPEED;
+      dx *= frameScale;
+      dy *= frameScale;
       if (dx !== 0 || dy !== 0) moveClaw(dx, dy);
     }
     keyRafRef.current = requestAnimationFrame(keyLoop);
   }, [moveClaw]);
 
   useEffect(() => {
-    if (!isAiming || gameOver) pressedKeys.current.clear();
-  }, [gameOver, isAiming]);
+    if (!isAiming) pressedKeys.current.clear();
+  }, [isAiming]);
 
   useEffect(() => {
+    keyLoopLastTimeRef.current = null;
     keyRafRef.current = requestAnimationFrame(keyLoop);
     const onDown = (e: KeyboardEvent) => {
       const directionalKey = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key);
@@ -382,7 +370,10 @@ export default function ClawMachine() {
       }
     };
     const onUp = (e: KeyboardEvent) => pressedKeys.current.delete(e.key);
-    const onBlur = () => pressedKeys.current.clear();
+    const onBlur = () => {
+      pressedKeys.current.clear();
+      keyLoopLastTimeRef.current = null;
+    };
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     window.addEventListener("blur", onBlur);
@@ -391,6 +382,7 @@ export default function ClawMachine() {
       window.removeEventListener("keyup", onUp);
       window.removeEventListener("blur", onBlur);
       if (keyRafRef.current) cancelAnimationFrame(keyRafRef.current);
+      keyLoopLastTimeRef.current = null;
       cancelAnimRef.current?.();
     };
   }, [keyLoop, triggerGrab]);
@@ -423,9 +415,7 @@ export default function ClawMachine() {
         <div className="machine-side-depth machine-side-depth-right" aria-hidden="true" />
         <div className="machine-crown" aria-hidden="true"><span>LUCKY</span><b>CLAW</b></div>
         <div className="machine-glass" ref={glassRef}>
-          <div className="prism-wall" aria-hidden="true">
-            <i className="prism prism-a" /><i className="prism prism-b" /><i className="prism prism-c" /><i className="prism prism-d" /><i className="prism prism-e" /><i className="prism prism-f" /><i className="prism prism-g" /><i className="prism prism-h" /><i className="prism prism-i" /><i className="prism prism-j" />
-          </div>
+          <div className="prism-wall" aria-hidden="true" />
           <div className="machine-back-glow" />
           <div className="machine-light-beam machine-light-beam-one" aria-hidden="true" />
           <div className="machine-light-beam machine-light-beam-two" aria-hidden="true" />
@@ -451,12 +441,12 @@ export default function ClawMachine() {
           <div className="deck-screw screw-tl" /><div className="deck-screw screw-tr" />
           <div className="deck-screw screw-bl" /><div className="deck-screw screw-br" />
           <div className="deck-shadow" />
-          <button type="button" className="deck-arrow deck-arrow-left" aria-label="Move claw left" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowLeft")} onPointerUp={(event) => releaseDirection(event, "ArrowLeft")} onPointerCancel={(event) => releaseDirection(event, "ArrowLeft")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowLeft")}>◀</button>
-          <button type="button" className="deck-arrow deck-arrow-up" aria-label="Move claw up" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowUp")} onPointerUp={(event) => releaseDirection(event, "ArrowUp")} onPointerCancel={(event) => releaseDirection(event, "ArrowUp")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowUp")}>▲</button>
-          <button type="button" className="deck-arrow deck-arrow-down" aria-label="Move claw down" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowDown")} onPointerUp={(event) => releaseDirection(event, "ArrowDown")} onPointerCancel={(event) => releaseDirection(event, "ArrowDown")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowDown")}>▼</button>
-          <button type="button" className="deck-arrow deck-arrow-right" aria-label="Move claw right" disabled={!isAiming || gameOver} onPointerDown={(event) => pressDirection(event, "ArrowRight")} onPointerUp={(event) => releaseDirection(event, "ArrowRight")} onPointerCancel={(event) => releaseDirection(event, "ArrowRight")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowRight")}>▶</button>
-          <CoinSlot onInsert={() => insertCoin(1)} disabled={gameOver} />
-          <Joystick onMove={moveClaw} disabled={!isAiming || gameOver} targetLocked={Boolean(targetPrize)} targetAvailable={Boolean(nearestPrize)} />
+          <button type="button" className="deck-arrow deck-arrow-left" aria-label="Move claw left" disabled={!isAiming} onPointerDown={(event) => pressDirection(event, "ArrowLeft")} onPointerUp={(event) => releaseDirection(event, "ArrowLeft")} onPointerCancel={(event) => releaseDirection(event, "ArrowLeft")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowLeft")}>◀</button>
+          <button type="button" className="deck-arrow deck-arrow-up" aria-label="Move claw up" disabled={!isAiming} onPointerDown={(event) => pressDirection(event, "ArrowUp")} onPointerUp={(event) => releaseDirection(event, "ArrowUp")} onPointerCancel={(event) => releaseDirection(event, "ArrowUp")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowUp")}>▲</button>
+          <button type="button" className="deck-arrow deck-arrow-down" aria-label="Move claw down" disabled={!isAiming} onPointerDown={(event) => pressDirection(event, "ArrowDown")} onPointerUp={(event) => releaseDirection(event, "ArrowDown")} onPointerCancel={(event) => releaseDirection(event, "ArrowDown")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowDown")}>▼</button>
+          <button type="button" className="deck-arrow deck-arrow-right" aria-label="Move claw right" disabled={!isAiming} onPointerDown={(event) => pressDirection(event, "ArrowRight")} onPointerUp={(event) => releaseDirection(event, "ArrowRight")} onPointerCancel={(event) => releaseDirection(event, "ArrowRight")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowRight")}>▶</button>
+          <CoinSlot onInsert={() => insertCoin(1)} />
+          <Joystick onMove={moveClaw} disabled={!isAiming} targetLocked={Boolean(targetPrize)} targetAvailable={Boolean(nearestPrize)} />
           <div className={`aim-readout ${targetPrize ? "is-locked" : ""}`} aria-live="polite">
             <span>{targetPrize ? "● LOCKED" : nearestPrize ? "◌ AIMING" : "◇ SCAN"}</span>
             <b>{targetPrize?.template.name ?? nearestPrize?.prize.template.name ?? "MOVE CLAW"}</b>
@@ -471,7 +461,7 @@ export default function ClawMachine() {
             <i><b style={{ width: `${jackpotProgress}%` }} /></i>
             <small>{streak > 0 ? `STREAK ×${streak}` : "WIN TO CHARGE"}</small>
           </div>
-          <motion.button onClick={triggerGrab} disabled={!isAiming || gameOver || coins < 1} whileTap={{ scale: 0.93, y: 4 }} className={`grab-button ${!isAiming || gameOver || coins < 1 ? "is-disabled" : ""}`} aria-label="Press to grab"><span /><b>GRAB</b></motion.button>
+          <motion.button onClick={triggerGrab} disabled={!isAiming || coins < 1} whileTap={{ scale: 0.93, y: 4 }} className={`grab-button ${!isAiming || coins < 1 ? "is-disabled" : ""}`} aria-label="Press to grab"><span /><b>GRAB</b></motion.button>
           <div className="deck-control-label deck-control-label-left">AIM</div>
           <div className="deck-control-label deck-control-label-right">GRAB</div>
           <div className="deck-coin-count">{String(coins).padStart(2, "0")}</div>
@@ -483,15 +473,6 @@ export default function ClawMachine() {
 
       <div className="machine-ground-shadow" aria-hidden="true" />
       <Confetti active={confettiActive} big={confettiBig} />
-      {gameOver && <motion.div className="game-over-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-        <motion.div className="game-over-card" initial={{ scale: .8, y: 18 }} animate={{ scale: 1, y: 0 }}>
-          <span className="game-over-kicker">ROUND COMPLETE</span>
-          <strong className="game-over-time">00:00</strong>
-          <h2>TIME UP!</h2>
-          <p>Insert your luck again and beat your score.</p>
-          <button onClick={handleRestart}>PLAY AGAIN · 60 SEC</button>
-        </motion.div>
-      </motion.div>}
     </div>
   );
 }

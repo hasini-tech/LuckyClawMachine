@@ -3,14 +3,13 @@
 import { create } from "zustand";
 import { PRIZE_TEMPLATES, PrizeTemplate, Rarity, randomPrizeTemplate } from "@/lib/prizes";
 
-export const ROUND_DURATION_SECONDS = 60;
 const CLAW_MIN_X = 6;
 const CLAW_MAX_X = 94;
 const CLAW_MIN_Y = 6;
 const CLAW_MAX_Y = 90;
 
 export type ClawPhase =
-  | "ready" // round is waiting to begin
+  | "ready" // machine is idle
   | "aiming" // player has control of the joystick
   | "dropping" // claw descending toward the prize field
   | "grabbing" // claw jaws closing
@@ -40,9 +39,6 @@ export interface WonPrize {
 
 interface GameState {
   coins: number;
-  timeLeft: number;
-  gameStarted: boolean;
-  gameOver: boolean;
   score: number;
   streak: number;
   bestStreak: number;
@@ -84,9 +80,6 @@ interface GameState {
   toggleMusic: () => void;
   toggleSfx: () => void;
   initPrizes: (count: number) => void;
-  startRound: () => void;
-  tickTimer: () => void;
-  resetRound: () => void;
 }
 
 function makePrize(existing: PrizeInstance[], forcedTemplate?: PrizeTemplate): PrizeInstance {
@@ -116,9 +109,6 @@ function makePrize(existing: PrizeInstance[], forcedTemplate?: PrizeTemplate): P
 
 export const useGameStore = create<GameState>((set, get) => ({
   coins: 25,
-  timeLeft: ROUND_DURATION_SECONDS,
-  gameStarted: false,
-  gameOver: false,
   score: 0,
   streak: 0,
   bestStreak: 0,
@@ -130,7 +120,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   clawX: 50,
   clawY: 12,
   clawExtension: 0,
-  clawPhase: "ready",
+  // The machine is playable immediately; there is no timed round to start.
+  clawPhase: "aiming",
   heldPrizeUid: null,
   lastReward: null,
   showReward: false,
@@ -140,17 +131,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   sfxOn: true,
 
   insertCoin: (amount = 1) => {
-    const { coins, gameOver } = get();
-    if (gameOver && amount > 0) return false;
+    const { coins } = get();
     set({ coins: coins + amount });
     return true;
   },
 
   moveClaw: (dx, dy) => {
-    const { clawX, clawY, clawPhase, gameOver } = get();
+    const { clawX, clawY, clawPhase } = get();
     // Joystick and keyboard input share this guard, so invalid input can never
     // push the claw outside the playable field or poison the position with NaN.
-    if (clawPhase !== "aiming" || gameOver || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    if (clawPhase !== "aiming" || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
     set({
       clawX: Math.min(CLAW_MAX_X, Math.max(CLAW_MIN_X, clawX + dx)),
       clawY: Math.min(CLAW_MAX_Y, Math.max(CLAW_MIN_Y, clawY + dy)),
@@ -200,7 +190,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       wonAt: Date.now(),
     };
     set((s) => {
-      if (s.gameOver) return s;
       const isJackpot = s.jackpotProgress >= 100;
       const bonus = isJackpot ? 500 : 0;
       const newStreak = s.streak + 1;
@@ -222,7 +211,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   registerMiss: () =>
     set((s) => {
-      if (s.gameOver) return s;
       return {
         streak: 0,
         jackpotProgress: Math.min(100, s.jackpotProgress + 5),
@@ -253,42 +241,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ prizes });
   },
 
-  startRound: () => {
-    if (get().gameOver) return;
-    set({ gameStarted: true, clawPhase: "aiming" });
-  },
-
-  tickTimer: () => {
-    set((state) => {
-      if (!state.gameStarted || state.gameOver || state.timeLeft <= 0) return state;
-      const timeLeft = Math.max(0, state.timeLeft - 1);
-      return {
-        timeLeft,
-        gameOver: timeLeft === 0,
-        ...(timeLeft === 0 ? { showReward: false, isJackpotWin: false } : {}),
-      };
-    });
-  },
-
-  resetRound: () => {
-    set({
-      coins: 25,
-      timeLeft: ROUND_DURATION_SECONDS,
-      gameStarted: true,
-      gameOver: false,
-      attempts: 0,
-      streak: 0,
-      showReward: false,
-      isJackpotWin: false,
-      lastReward: null,
-      clawX: 51,
-      clawY: 11,
-      clawExtension: 0,
-      clawPhase: "aiming",
-      heldPrizeUid: null,
-      cameraMode: "front",
-    });
-  },
 }));
 
 export function rarityRank(r: Rarity): number {

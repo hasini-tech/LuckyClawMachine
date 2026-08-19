@@ -11,8 +11,13 @@ interface JoystickProps {
   targetAvailable?: boolean;
 }
 
-const DESKTOP_SPEED = 0.72;
-const MOBILE_SPEED = 1.15;
+// Movement is expressed as claw-field percentage points per 60 FPS frame.
+// The higher values make a full joystick throw cross the field quickly while
+// the dead zone still keeps tiny resting movements from drifting.
+const DESKTOP_SPEED = 1.05;
+const MOBILE_SPEED = 1.45;
+const MAX_HOLD_ACCELERATION = 1.75;
+const HOLD_ACCELERATION_MS = 300;
 const MOBILE_BREAKPOINT = 760;
 const DEAD_ZONE = 0.1;
 const MIN_TRAVEL_RADIUS = 1;
@@ -35,6 +40,7 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
   const draggingRef = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
   const lastTickRef = useRef<number | null>(null);
+  const dragStartedAtRef = useRef<number | null>(null);
   const lastMoveSoundRef = useRef(0);
 
   onMoveRef.current = onMove;
@@ -91,7 +97,12 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
       const speed = typeof window !== "undefined" && window.innerWidth <= MOBILE_BREAKPOINT
         ? MOBILE_SPEED
         : DESKTOP_SPEED;
-      onMoveRef.current(x * speed * frameScale, y * speed * frameScale);
+      // Holding the stick down builds speed over a short period. This makes
+      // small corrections precise and long throws fast without teleporting the
+      // claw when the player first touches the joystick.
+      const heldForMs = dragStartedAtRef.current === null ? 0 : now - dragStartedAtRef.current;
+      const holdAcceleration = Math.min(MAX_HOLD_ACCELERATION, 1 + heldForMs / HOLD_ACCELERATION_MS);
+      onMoveRef.current(x * speed * holdAcceleration * frameScale, y * speed * holdAcceleration * frameScale);
       if (now - lastMoveSoundRef.current > 150) {
         soundManager.joystickMove();
         lastMoveSoundRef.current = now;
@@ -129,6 +140,7 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
     draggingRef.current = false;
     pointerIdRef.current = null;
     lastTickRef.current = null;
+    dragStartedAtRef.current = null;
     vectorRef.current = { x: 0, y: 0 };
     setKnob({ x: 0, y: 0 });
     setDragging(false);
@@ -163,7 +175,9 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
     pointerIdRef.current = e.pointerId;
     draggingRef.current = true;
     setDragging(true);
-    lastTickRef.current = performance.now();
+    const now = performance.now();
+    lastTickRef.current = now;
+    dragStartedAtRef.current = now;
     measure();
     updateFromPointer(e.clientX, e.clientY);
     if (!rafRef.current) rafRef.current = requestAnimationFrame(tick);
@@ -177,7 +191,7 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (disabled) return;
-    const step = e.shiftKey ? 6 : 3;
+    const step = e.shiftKey ? 8 : 4;
     const directions: Record<string, [number, number]> = {
       ArrowLeft: [-step, 0], ArrowRight: [step, 0],
       ArrowUp: [0, -step], ArrowDown: [0, step],

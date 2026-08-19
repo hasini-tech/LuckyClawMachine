@@ -192,7 +192,7 @@ button:focus-visible, [role="button"]:focus-visible, [role="slider"]:focus-visib
 .machine-deck::before { content: ""; position: absolute; z-index: 0; left: 8%; right: 8%; top: 12%; height: 2px; background: rgba(255,255,255,.68); box-shadow: 0 2px 0 rgba(49,94,135,.25); pointer-events: none; }
 .machine-deck > * { transform-style: preserve-3d; }
 .aim-readout { transform: translateX(-50%) translateZ(20px); }
-.aim-readout small { display: block; margin-top: 3px; color: rgba(63,94,110,.76); font: 900 7px var(--font-body); letter-spacing: .1em; }
+.aim-readout small { display: block; max-width: 100%; margin-top: 3px; overflow: hidden; color: rgba(63,94,110,.76); font: 900 7px var(--font-body); letter-spacing: .1em; text-overflow: ellipsis; white-space: nowrap; }
 .grab-button { transform: translateY(-50%) translateZ(24px); transition: filter .18s ease, box-shadow .18s ease; }
 .grab-button:hover:not(:disabled) { filter: brightness(1.14) saturate(1.12); box-shadow: 0 10px 0 #4a4a4a, 0 12px 10px rgba(0,0,0,.4), 0 0 20px rgba(255,56,75,.65); }
 .grab-button b { position: absolute; inset: 0; display: grid; place-items: center; padding-top: 2px; color: rgba(255,255,255,.9); font: 900 clamp(8px, 1vw, 12px) var(--font-body); letter-spacing: .14em; text-shadow: 0 2px 0 #8d171b; }
@@ -301,8 +301,8 @@ button:focus-visible, [role="button"]:focus-visible, [role="slider"]:focus-visib
   .machine-deck { left: 8%; right: 8%; bottom: 0; height: 27%; border-width: 3px; border-radius: 10px; transform: perspective(700px) rotateX(3deg) translateZ(8px); }
   .deck-screw { width: 11px; height: 11px; }.screw-tl { top: 7px; left: 7px; }.screw-tr { top: 7px; right: 7px; }.screw-bl { bottom: 7px; left: 7px; }.screw-br { bottom: 7px; right: 7px; }
   .deck-arrow { display: none; }
-  .aim-readout { top: 5%; min-width: 96px; padding: 3px 7px; }
-  .aim-readout span { font-size: 7px; }.aim-readout b { font-size: 9px; }
+  .aim-readout { top: 4%; width: clamp(140px, 42vw, 220px); min-width: 0; padding: 4px 8px; }
+  .aim-readout span { font-size: 7px; }.aim-readout b { max-width: 100%; font-size: 9px; }.aim-readout small { font-size: 6px; letter-spacing: .06em; }
   .joystick-control { left: 12%; top: 54%; width: clamp(58px, 22vw, 88px); }
   .grab-button { right: 16%; top: 54%; width: clamp(54px, 18vw, 70px); border-width: 3px; box-shadow: 0 7px 0 #4a4a4a, 0 9px 8px rgba(0,0,0,.4); }
   .coin-slot-control { left: 50%; top: 78%; transform: translate(-50%, -50%) scale(.8); }
@@ -326,7 +326,7 @@ button:focus-visible, [role="button"]:focus-visible, [role="slider"]:focus-visib
   .machine-deck { left: 6%; right: 6%; }
   .joystick-control { left: 10%; width: 58px; }.grab-button { right: 16%; width: 54px; }
   .joystick-status { letter-spacing: .08em; }
-  .aim-readout { min-width: 82px; }
+  .aim-readout { width: min(82vw, 180px); }
 }
 
 @media (max-width: 760px) and (orientation: landscape) {
@@ -359,16 +359,16 @@ button:focus-visible, [role="button"]:focus-visible, [role="slider"]:focus-visib
   }
 
   .alignment-meter {
-    left: 31%;
-    right: 31%;
-    top: 25%;
+    left: 28%;
+    right: 28%;
+    top: 29%;
     z-index: 6;
   }
 
   .deck-jackpot {
-    left: 31%;
-    right: 31%;
-    top: 36%;
+    left: 28%;
+    right: 28%;
+    top: 41%;
     z-index: 6;
   }
 
@@ -376,6 +376,12 @@ button:focus-visible, [role="button"]:focus-visible, [role="slider"]:focus-visib
   .grab-button,
   .coin-slot-control {
     z-index: 12;
+  }
+
+  /* The joystick status and grab button already label themselves on mobile;
+     hiding the extra deck captions prevents duplicate AIM/GRAB text. */
+  .deck-control-label {
+    display: none;
   }
 
   .joystick-control {

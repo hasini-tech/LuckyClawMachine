@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { motion } from "framer-motion";
 import { useGameStore } from "@/store/useGameStore";
 import { RARITY_CONFIG } from "@/lib/prizes";
-import { animateValue2D, clamp, computeGrabChance, distance, rollSuccess } from "@/lib/physics";
+import { animateValue2D, computeGrabChance, distance, rollSuccess } from "@/lib/physics";
 import { soundManager } from "@/lib/sounds";
 import Claw from "./Claw";
 import Prize from "./Prize";
@@ -16,7 +16,6 @@ import PrizeDrop from "./PrizeDrop";
 const CHUTE_POS = { x: 8, y: 78 };
 const REST_POS = { x: 51, y: 11 };
 const GRAB_RADIUS_PX = 38;
-const AIM_RADIUS_PX = 76;
 const PRIZE_COUNT = 85;
 const KEYBOARD_SPEED = 2.1;
 
@@ -41,7 +40,6 @@ export default function ClawMachine() {
   const [confettiBig, setConfettiBig] = useState(false);
   const [shake, setShake] = useState(false);
   const [feedback, setFeedback] = useState<"success" | "miss" | null>(null);
-  const [selectedPrizeUid, setSelectedPrizeUid] = useState<string | null>(null);
   const [releaseDrop, setReleaseDrop] = useState<{ uid: string; template: (typeof prizes)[number]["template"] } | null>(null);
   const [fieldSize, setFieldSize] = useState({ width: 320, height: 520 });
   const glassRef = useRef<HTMLDivElement>(null);
@@ -123,47 +121,6 @@ export default function ClawMachine() {
   const carriageY = 10 + clawY * 0.12;
   const dropTargetPx = Math.max(0, ((clawY - carriageY) / 100) * fieldSize.height - 64);
 
-  const nearestPrize = useMemo(() => {
-    if (!isAiming) return null;
-    let closest: (typeof prizes)[number] | null = null;
-    let closestDistance = Infinity;
-
-    for (const prize of prizes) {
-      if (prize.fallen || prize.grabbed) continue;
-      const currentDistance = distance(
-        (clawX / 100) * fieldSize.width,
-        (clawY / 100) * fieldSize.height,
-        (prize.x / 100) * fieldSize.width,
-        (prize.y / 100) * fieldSize.height,
-      );
-      if (currentDistance < closestDistance) {
-        closest = prize;
-        closestDistance = currentDistance;
-      }
-    }
-
-    return closest ? { prize: closest, distance: closestDistance } : null;
-  }, [clawX, clawY, fieldSize, isAiming, prizes]);
-
-  const targetPrize = nearestPrize && nearestPrize.distance <= GRAB_RADIUS_PX ? nearestPrize.prize : null;
-  const checkDistance = nearestPrize ? Math.round(nearestPrize.distance) : null;
-  const alignmentPercent = nearestPrize
-    ? Math.round(clamp(1 - nearestPrize.distance / AIM_RADIUS_PX, 0, 1) * 100)
-    : 0;
-  const alignmentLabel = targetPrize
-    ? alignmentPercent >= 84 ? "PERFECT AIM" : "READY TO GRAB"
-    : nearestPrize ? `${alignmentPercent}% ALIGN` : "MOVE CLAW";
-  const guideDx = nearestPrize ? ((nearestPrize.prize.x - clawX) / 100) * fieldSize.width : 0;
-  const guideDy = nearestPrize ? ((nearestPrize.prize.y - carriageY) / 100) * fieldSize.height : 0;
-  const aimGuide = nearestPrize && isAiming
-    ? {
-      left: `${clawX}%`,
-      top: `${carriageY}%`,
-      width: `${Math.max(2, (Math.hypot(guideDx, guideDy) / fieldSize.width) * 100)}%`,
-      transform: `translateY(-50%) rotate(${Math.atan2(guideDy, guideDx) * (180 / Math.PI)}deg)`,
-    }
-    : null;
-
   const pulseMachine = useCallback((duration = 260) => {
     setShake(true);
     window.setTimeout(() => setShake(false), duration);
@@ -172,20 +129,6 @@ export default function ClawMachine() {
   const haptic = useCallback((pattern: number | number[]) => {
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(pattern);
   }, []);
-
-  const handlePrizeSelect = useCallback((prize: (typeof prizes)[number]) => {
-    soundManager.unlock();
-    soundManager.buttonPress();
-    setSelectedPrizeUid(prize.uid);
-
-    // On touch devices, tapping a visible box is a quick aiming assist. The
-    // claw still uses its real position and the normal pixel collision check
-    // when GRAB is pressed; this only removes difficult tiny-screen dragging.
-    if (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches) {
-      setClawPos(prize.x, prize.y);
-      haptic(8);
-    }
-  }, [haptic, setClawPos]);
 
   const triggerGrab = useCallback(() => {
     const state = useGameStore.getState();
@@ -265,7 +208,6 @@ export default function ClawMachine() {
               if (success && target) {
                 markPrizeFallen(target.uid);
                 setHeldPrize(null);
-                setSelectedPrizeUid(null);
                 setReleaseDrop({ uid: target.uid, template: target.template });
                 scheduleSequenceStep(() => {
                   if (sequenceIdRef.current !== sequenceId) return;
@@ -422,9 +364,7 @@ export default function ClawMachine() {
           <div className="glass-star glass-star-one">✦</div><div className="glass-star glass-star-two">✦</div><div className="glass-star glass-star-three">✧</div>
           <div className="prize-tray"><div className="tray-back" /><div className="tray-shadow" /></div>
           <div className="prize-chute" aria-label="Prize collection chute"><span>DROP</span></div>
-          {aimGuide && <div className={`aim-guide ${targetPrize ? "is-locked" : ""}`} style={aimGuide} aria-hidden="true"><span /></div>}
-          {isAiming && <div className={`claw-check-reticle ${targetPrize ? "is-locked" : ""}`} style={{ left: `${clawX}%`, top: `${clawY}%` }} aria-hidden="true"><i /><b>{targetPrize ? "LOCK" : "CHECK"}</b></div>}
-          {prizes.map((prize) => <Prize key={prize.uid} prize={prize} isHeld={prize.uid === heldPrizeUid} isDropping={false} isTarget={prize.uid === nearestPrize?.prize.uid} isTargetLocked={prize.uid === targetPrize?.uid} isSelected={prize.uid === selectedPrizeUid} onSelect={isAiming ? () => handlePrizeSelect(prize) : undefined} />)}
+          {prizes.map((prize) => <Prize key={prize.uid} prize={prize} isHeld={prize.uid === heldPrizeUid} isDropping={false} />)}
           {releaseDrop && <PrizeDrop key={releaseDrop.uid} template={releaseDrop.template} />}
           <Claw x={clawX} y={carriageY} extension={clawExtension} phase={clawPhase} dropDistance={dropTargetPx} heldEmoji={heldPrize?.template.emoji ?? null} heldColor={heldPrize ? RARITY_CONFIG[heldPrize.template.rarity].color : null} heldImage={heldPrize?.template.imageUrl ?? null} />
           <div className="glass-shine" aria-hidden="true" /><div className="glass-edge-bottom" aria-hidden="true" />
@@ -446,16 +386,7 @@ export default function ClawMachine() {
           <button type="button" className="deck-arrow deck-arrow-down" aria-label="Move claw down" disabled={!isAiming} onPointerDown={(event) => pressDirection(event, "ArrowDown")} onPointerUp={(event) => releaseDirection(event, "ArrowDown")} onPointerCancel={(event) => releaseDirection(event, "ArrowDown")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowDown")}>▼</button>
           <button type="button" className="deck-arrow deck-arrow-right" aria-label="Move claw right" disabled={!isAiming} onPointerDown={(event) => pressDirection(event, "ArrowRight")} onPointerUp={(event) => releaseDirection(event, "ArrowRight")} onPointerCancel={(event) => releaseDirection(event, "ArrowRight")} onLostPointerCapture={(event) => releaseDirection(event, "ArrowRight")}>▶</button>
           <CoinSlot onInsert={() => insertCoin(1)} />
-          <Joystick onMove={moveClaw} disabled={!isAiming} targetLocked={Boolean(targetPrize)} targetAvailable={Boolean(nearestPrize)} />
-          <div className={`aim-readout ${targetPrize ? "is-locked" : ""}`} aria-live="polite">
-            <span>{targetPrize ? "● LOCKED" : nearestPrize ? "◌ AIMING" : "◇ SCAN"}</span>
-            <b>{targetPrize?.template.name ?? nearestPrize?.prize.template.name ?? "MOVE CLAW"}</b>
-            <small>{targetPrize ? "BOX IN RANGE · PRESS GRAB" : nearestPrize ? `${alignmentLabel} · ${checkDistance}px` : "STEER TO A TOY"}</small>
-          </div>
-          <div className={`alignment-meter ${targetPrize ? "is-locked" : ""}`} aria-label={`Claw alignment ${alignmentPercent}%`}>
-            <div><span>ALIGNMENT</span><strong>{alignmentPercent}%</strong></div>
-            <i><b style={{ width: `${alignmentPercent}%` }} /></i>
-          </div>
+          <Joystick onMove={moveClaw} disabled={!isAiming} />
           <div className="deck-jackpot" aria-live="polite">
             <div><span>LUCK METER</span><b>{jackpotProgress}%</b></div>
             <i><b style={{ width: `${jackpotProgress}%` }} /></i>

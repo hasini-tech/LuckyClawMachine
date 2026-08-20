@@ -7,8 +7,6 @@ import { soundManager } from "@/lib/sounds";
 interface JoystickProps {
   onMove: (dx: number, dy: number) => void;
   disabled?: boolean;
-  targetLocked?: boolean;
-  targetAvailable?: boolean;
 }
 
 // Movement is expressed as claw-field percentage points per 60 FPS frame.
@@ -28,7 +26,7 @@ interface JoystickMetrics {
   travelRadius: number;
 }
 
-export default function Joystick({ onMove, disabled, targetLocked = false, targetAvailable = false }: JoystickProps) {
+export default function Joystick({ onMove, disabled }: JoystickProps) {
   const baseRef = useRef<HTMLDivElement>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -216,8 +214,6 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
     : 180 + Math.atan2(knob.x, -knob.y) * (180 / Math.PI);
   const stickLength = 0.58 + knobDistance * 0.42;
   const outputPercent = Math.round(knobDistance * 100);
-  const status = disabled ? "BUSY" : targetLocked ? "LOCKED" : dragging ? "MOVE" : targetAvailable ? "AIM" : "READY";
-
   return (
     <div
       ref={baseRef}
@@ -228,14 +224,14 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
       onLostPointerCapture={stop}
       onContextMenu={(e) => e.preventDefault()}
       onKeyDown={handleKeyDown}
-      className={`joystick-control ${disabled ? "is-disabled" : ""} ${targetLocked ? "is-target-locked" : ""}`}
+      className={`joystick-control ${disabled ? "is-disabled" : ""}`}
       data-active={dragging}
       role="slider"
       aria-label="Claw joystick"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={outputPercent}
-      aria-valuetext={targetLocked ? "Prize box aligned" : `${status}, move the claw`}
+      aria-valuetext="Move the claw"
       aria-disabled={disabled}
       tabIndex={disabled ? -1 : 0}
       data-joystick="true"
@@ -260,7 +256,6 @@ export default function Joystick({ onMove, disabled, targetLocked = false, targe
         ref={knobRef}
         className="joystick-knob"
       />
-      <div className="joystick-status" aria-hidden="true"><span>{status}</span></div>
     </div>
   );
 }
